@@ -1,160 +1,165 @@
-
-
 import os
-os.environ["THEANO_FLAGS"] = "mode=FAST_RUN,device=gpu,floatX=float32"
-
-from keras.models import Sequential
-from keras.layers.core import Dense, Activation, Flatten, Dropout
-from keras.optimizers import SGD
-from keras.layers.convolutional import Convolution2D, MaxPooling2D
-from keras.callbacks import EarlyStopping, LearningRateScheduler
-from keras.preprocessing.image import ImageDataGenerator
-
-import numpy as np
 import matplotlib.pyplot as plt
-from collections import OrderedDict
-from sklearn.cross_validation import train_test_split
-
-
-def cnn_model():
-    model = Sequential()
-
-    model.add(Convolution2D(32, 3, 3, input_shape=(1, 96, 96)))
-    model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.1))
-
-    model.add(Convolution2D(64, 2, 2))
-    model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.2))
-
-    model.add(Convolution2D(128, 2, 2))
-    model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.3))
-
-    model.add(Flatten())
-    model.add(Dense(1000))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(1000))
-    model.add(Activation('relu'))
-    model.add(Dense(30))
-
-from keras.preprocessing.image import ImageDataGenerator
-class FlippedImageDataGenerator(ImageDataGenerator):
-    flip_indices = [(0, 2), (1, 3), (4, 8), (5, 9),
-                    (6, 10), (7, 11), (12, 16), (13, 17),
-                    (14, 18), (15, 19), (22, 24), (23, 25)]
-
-    def next(self):
-        X_batch, y_batch = super(FlippedImageDataGenerator, self).next()
-        batch_size = X_batch.shape[0]
-        indices = np.random.choice(batch_size, batch_size / 2, replace=False)
-        X_batch[indices] = X_batch[indices, :, :, ::-1]
-
-        if y_batch is not None:
-            y_batch[indices, ::2] = y_batch[indices, ::2] * -1
-
-            for a, b in self.flip_indices:
-                y_batch[indices, a], y_batch[indices, b] = (
-                    y_batch[indices, b], y_batch[indices, a]
-                )
-
-        return X_batch, y_batch
-    
-def fit_model():
-    start = 0.03
-    stop = 0.001
-    nb_epoch = 1000
-    PRETRAIN = False
-    learning_rate = np.linspace(start, stop, nb_epoch)
-
-    X, y = load2d()
-    X_train, X_test, y_train, y_test = train_test_split(X, y,
-                                                test_size=0.2, random_state=42)
-
-    model = cnn_model()
-    if PRETRAIN:
-        model.load_weights('my_cnn_model_weights.h5')
-    sgd = SGD(lr=start, momentum=0.9, nesterov=True)
-    model.compile(loss='mse', optimizer=sgd)
-    change_lr = LearningRateScheduler(lambda epoch: float(learning_rate[epoch]))
-    early_stop = EarlyStopping(patience=100)
-
-    flipgen = FlippedImageDataGenerator()
-    hist = model.fit_generator(flipgen.flow(X_train, y_train),
-                            samples_per_epoch=X_train.shape[0],
-                            nb_epoch=nb_epoch,
-                            validation_data=(X_test, y_test),
-                            callbacks=[change_lr, early_stop])
-
-    model.save_weights('my_cnn_model_weights.h5', overwrite=True)
-    np.savetxt('my_cnn_model_loss.csv', hist.history['loss'])
-    np.savetxt('my_cnn_model_val_loss.csv', hist.history['val_loss'])
-
-# file kfkd.py
-
 import numpy as np
 from pandas.io.parsers import read_csv
 from sklearn.utils import shuffle
+import time
+
+FTRAIN=os.getcwd()+'/data/training.csv'
+FTEST=os.getcwd()+'/data/test.csv'
+FIdLookup=os.getcwd()+'/data/IdlookupTable.csv'
 
 
-FTRAIN = '~/data/kaggle-facial-keypoint-detection/training.csv'
-FTEST = '~/data/kaggle-facial-keypoint-detection/test.csv'
+# setting up gpu usage limit and using single gpu
+import tensorflow as tf
+from keras.backend.tensorflow_backend import set_session
+print(tf.__version__)
+config=tf.ConfigProto()
+config.gpu_options.per_process_gpu_memory_fraction=0.95
+config.gpu_options.visible_device_list='0'
+set_session(tf.Session(config=config))
 
+def plot_sample(x,y,axs):
+    #SHow Image and scatter plot 
+    #rescale y 1 to -1
+    axs.imshow(x.reshape(96,96),cmap="gray")
+    axs.scatter(48*y[0::2]+48,48*y[1::2]+48)
 
-def load(test=False, cols=None):
+# define the load function to get the input data for testing and training 
+# which can be chose by the test=true or false 
+def load(test=False,cols=None):
+    """cols: list containing landmark label names
+    if this is specified only a subset is extracted
+    ex:[left_eye_center_x,lef_eye_center_y]
     
-    fname = FTEST if test else FTRAIN
-    df = read_csv(os.path.expanduser(fname))  # load pandas dataframe
-
-    # The Image column has pixel values separated by space; convert
-    # the values to numpy arrays:
-    df['Image'] = df['Image'].apply(lambda im: np.fromstring(im, sep=' '))
-
-    if cols:  # get a subset of columns
-        df = df[list(cols) + ['Image']]
-
-    print(df.count())  # prints the number of values for each column
-    df = df.dropna()  # drop all rows that have missing values in them
-
-    X = np.vstack(df['Image'].values) / 255.  # scale pixel values to [0, 1]
-    X = X.astype(np.float32)
-
-    if not test:  # only FTRAIN has any target columns
-        y = df[df.columns[:-1]].values
-        y = (y - 48) / 48  # scale target coordinates to [-1, 1]
-        X, y = shuffle(X, y, random_state=42)  # shuffle train data
-        y = y.astype(np.float32)
+    return:
+        x:2-d numpy array(nsample,ncol*nrow)
+        y:2-d numpy array(nsample,nlandmarks*2)"""
+        
+    fname=FTEST if test else FTRAIN
+    df=read_csv(os.path.expanduser(fname))
+    
+    #convert image column data seperated by , in excel to an array with the values 
+    df['Image']=df['Image'].apply(lambda im:np.fromstring(im,sep=' '))
+    
+    if cols:
+        df=df[list(cols)+['Image']]
+    myprint=df.count()
+    myprint=myprint.reset_index()
+    print(myprint)
+    
+    #remove rows with atleast one n/a
+    df=df.dropna()
+    
+    x=np.vstack(df['Image'].values)/255 # change values to 0 to 1 and stack in one after another in a column
+    x=x.astype(np.float32)
+    
+    if not test:
+        y=df[df.columns[:-1]].values #choose all columns except the last image data column
+        y=(y-48)/48 # values between -1 and 1
+        x,y=shuffle(x,y,random_state=42) # shuffle data randomly together
+        y=y.astype(np.float32)
     else:
-        y = None
+        y=None
+        
+    return x,y
 
-    return X, y
-X, y = load()
 
-def load2d(test=False, cols=None):
-    X, y = load(test=test)
-    X = X.reshape(-1, 1, 96, 96)
-    return X, y
-
-def loss_plot():
-    loss = np.loadtxt('my_cnn_model_loss.csv')
-    val_loss = np.loadtxt('my_cnn_model_val_loss.csv')
-
-    plt.plot(loss, linewidth=3, label='train')
-    plt.plot(val_loss, linewidth=3, label='valid')
-    plt.grid()
-    plt.legend()
-    plt.xlabel('epoch')
-    plt.ylabel('loss')
-    plt.ylim(1e-3, 1e-2)
-    plt.yscale('log')
-    plt.show()
-
-def main():
-    fit_model()
+#load data as (nosamples,norows,nocolumns,1) from the excel data so we have images stored as data
+def load2d(test=False,cols=None):
+    re=load(test,cols)
     
-if __name__ == '__main__':
-    main()
+    # keeps the number of rows same and splits columns into 96,96
+    x=re[0].reshape(-1,96,96,1)
+    y=re[1]
+    
+    return x,y
+
+
+def plot_loss(hist,name,plt,RMSE_TF=False):
+    '''
+    RMSE_TFTrue then the rmse is plotted with the original scale
+    '''
+    loss=hist['loss']
+    val_loss=hist['val_loss']
+    if RMSE_TF:
+        loss=np.sqrt(np.array(loss))*48
+        val_loss=np.sqrt(np.array(val_loss))*48
+        
+    plt.plot(loss,"--",linewidth=3,label='train:'+name)
+    plt.plot(val_loss,linewidth=3,label='val:'+name)
+
+
+#LOAD THE DATA
+x,y=load()
+
+
+
+
+## SINGLE LAYER NEETWORK
+
+from keras.models import Sequential
+from keras.layers import Dense,Activation
+from keras.optimizers import SGD
+
+# create single layer with 100 neurons and 30 outut as y has 30 columns for locations
+model=Sequential()
+model.add(Dense(100,input_dim=x.shape[1]))
+model.add(Activation('relu'))
+model.add(Dense(30))
+start=time.time()
+sgd=SGD(lr=0.01,momentum=0.9,nesterov=True)
+model.compile(loss='mean_squared_error',optimizer=sgd)
+hist=model.fit(x,y,epochs=100,validation_split=0.2,verbose=False)
+end=time.time()
+print(end-start)
+
+#generate plot
+plot_loss(hist.history,"model 1",plt)
+plt.legend()
+plt.grid()
+plt.yscale("log")
+plt.xlabel("epoch")
+plt.ylabel("log loss")
+plt.show()
+
+#evaluate model
+x_test,_=load(test=True)
+y_test=model.predict(x_test)
+
+#plot some examples
+fig=plt.figure(figsize=(7,7))
+fig.subplots_adjust(hspace=0.13,wspace=0.0001,left=0,right=1,bottom=0,top=1) #adjusr spaces on sides and between pics
+
+npic=9
+count=1
+#create subplots and choose random pics and corresponding coordinates form y_test to show points
+for irow in range(npic):
+    ipic=np.random.choice(x_test.shape[0])
+    ax=fig.add_subplot(npic/3,3,count,xticks=[],yticks=[])
+    plot_sample(x_test[ipic],y_test[ipic],ax) #plot sample uses image and scatters points across it based on y_test coordinates
+    ax.set_title('picture'+str(ipic))
+    count+=1
+plt.show()
+ 
+    
+#(optinal) SAVE MODEL WEIGHTS
+'''
+from keras.models import model_from_json
+
+def save_model(model,name):
+    
+    json_string=model.to_json()
+    open(name+'_setup.json','w').write(json_string)
+    model.save_weights(name+'_weights.h5')
+
+def load_model(name):
+    model=model_from_json(open(name+'_setup.json').read())
+    model.load_weights(name+'_weights.h5')
+    return(model)
+
+save_model(model,'model1')
+model=load_model('model1')
+
+'''
+
